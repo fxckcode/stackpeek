@@ -2,10 +2,14 @@ package detector_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"stackpeek/internal/detector"
 )
@@ -138,6 +142,165 @@ func TestDefaultRegistry_SourceProvenanceStable(t *testing.T) {
 	}
 }
 
+func TestCanceledBuiltinScanIsNotClean(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := detector.DefaultRegistry().Scan(ctx, ".", fstest.MapFS{})
+	if !errors.Is(got.Fatal, context.Canceled) {
+		t.Fatalf("expected context cancellation to be fatal, got %+v", got)
+	}
+}
+
+func TestTerraformEntryLimitBoundaries(t *testing.T) {
+	cases := []struct {
+		name          string
+		fileCount     int
+		wantFindings  int
+		wantLimitDiag bool
+	}{
+		{name: "below limit", fileCount: 49_998, wantFindings: 49_998},
+		{name: "at limit", fileCount: 49_999, wantFindings: 49_999},
+		{name: "over limit", fileCount: 50_000, wantFindings: 49_999, wantLimitDiag: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := make(fstest.MapFS, tc.fileCount)
+			for i := 0; i < tc.fileCount; i++ {
+				name := fmt.Sprintf("file-%05d.tf", i)
+				files[name] = &fstest.MapFile{Data: []byte("resource {}")}
+			}
+
+			got := detector.DefaultRegistry().Scan(context.Background(), ".", files)
+			terraformFindings := 0
+			for _, finding := range got.Findings {
+				if finding.Technology == detector.TechTerraform {
+					terraformFindings++
+				}
+			}
+			if terraformFindings != tc.wantFindings {
+				t.Fatalf("Terraform findings = %d, want %d", terraformFindings, tc.wantFindings)
+			}
+			if hasIncompleteDiagCode(got.Diagnostics, "limit") != tc.wantLimitDiag {
+				t.Fatalf("entry limit diagnostic presence = %t, want %t; diagnostics: %v", hasIncompleteDiagCode(got.Diagnostics, "limit"), tc.wantLimitDiag, got.Diagnostics)
+			}
+			if got.Fatal != nil {
+				t.Fatalf("Fatal=%v", got.Fatal)
+			}
+		})
+	}
+}
+
+func TestTerraformDepthLimitBoundaries(t *testing.T) {
+	cases := []struct {
+		name          string
+		depth         int
+		wantFinding   bool
+		wantLimitDiag bool
+	}{
+		{name: "below limit", depth: 63, wantFinding: true},
+		{name: "at limit", depth: 64, wantFinding: true},
+		{name: "over limit", depth: 65, wantLimitDiag: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deepPath := strings.Repeat("level/", tc.depth-1) + "main.tf"
+			files := fstest.MapFS{
+				"a.tf":   &fstest.MapFile{Data: []byte("resource {}")},
+				deepPath: &fstest.MapFile{Data: []byte("resource {}")},
+			}
+
+			got := detector.DefaultRegistry().Scan(context.Background(), ".", files)
+			if containsFinding(got.Findings, detector.TechTerraform, deepPath) != tc.wantFinding {
+				t.Fatalf("finding at depth %d present = %t, want %t", tc.depth, containsFinding(got.Findings, detector.TechTerraform, deepPath), tc.wantFinding)
+			}
+			if !containsFinding(got.Findings, detector.TechTerraform, "a.tf") {
+				t.Fatalf("expected readable sibling finding before depth boundary, got %v", got.Findings)
+			}
+			if hasIncompleteDiagCode(got.Diagnostics, "limit") != tc.wantLimitDiag {
+				t.Fatalf("depth limit diagnostic presence = %t, want %t; diagnostics: %v", hasIncompleteDiagCode(got.Diagnostics, "limit"), tc.wantLimitDiag, got.Diagnostics)
+			}
+			if got.Fatal != nil {
+				t.Fatalf("Fatal=%v", got.Fatal)
+			}
+		})
+	}
+}
+
+func TestTerraformCancellationDuringTraversalIsNotClean(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	root := &cancelOnOpenFS{
+		FS:     fstest.MapFS{"a.tf": &fstest.MapFile{Data: []byte("resource {}")}, "z/b.tf": &fstest.MapFile{Data: []byte("resource {}")}},
+		name:   "z",
+		cancel: cancel,
+	}
+
+	got := detector.DefaultRegistry().Scan(ctx, ".", root)
+	if !root.opened {
+		t.Fatal("expected traversal to open the nested directory before cancellation")
+	}
+	if !errors.Is(got.Fatal, context.Canceled) {
+		t.Fatalf("expected in-flight cancellation to be fatal, got %+v", got)
+	}
+}
+
+func TestTerraformWalkErrorReportsIncompleteResults(t *testing.T) {
+	base := fstest.MapFS{
+		"main.tf":          &fstest.MapFile{Data: []byte("resource {}")},
+		"broken/hidden.tf": &fstest.MapFile{Data: []byte("resource {}")},
+	}
+	root := walkErrorFS{FS: base, path: "broken", err: fs.ErrPermission}
+	got := detector.DefaultRegistry().Scan(context.Background(), ".", root)
+
+	if !containsFinding(got.Findings, detector.TechTerraform, "main.tf") {
+		t.Fatalf("expected finding outside unreadable directory, got %v", got.Findings)
+	}
+	assertHasDiag(t, got.Diagnostics, "broken", "walk")
+	if got.Fatal != nil {
+		t.Fatalf("Fatal=%v", got.Fatal)
+	}
+}
+
+type walkErrorFS struct {
+	fs.FS
+	path string
+	err  error
+}
+
+func (f walkErrorFS) Open(name string) (fs.File, error) {
+	if name == f.path {
+		return nil, f.err
+	}
+	return f.FS.Open(name)
+}
+
+type cancelOnOpenFS struct {
+	fs.FS
+	name   string
+	cancel context.CancelFunc
+	opened bool
+}
+
+func (f *cancelOnOpenFS) Open(name string) (fs.File, error) {
+	if name == f.name && !f.opened {
+		f.opened = true
+		f.cancel()
+	}
+	return f.FS.Open(name)
+}
+
+func containsFinding(findings []detector.Finding, technology, signal string) bool {
+	for _, finding := range findings {
+		if finding.Technology == technology && finding.Signal == signal {
+			return true
+		}
+	}
+	return false
+}
+
 func writeFixture(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -182,6 +345,22 @@ func assertSourcesProvenance(t *testing.T, findings []detector.Finding) {
 			t.Fatalf("missing provenance: %+v", f)
 		}
 	}
+}
+
+func assertHasDiagCode(t *testing.T, diags []detector.Diagnostic, code string) {
+	t.Helper()
+	if !hasIncompleteDiagCode(diags, code) {
+		t.Fatalf("missing incomplete diagnostic code=%q in %v", code, diags)
+	}
+}
+
+func hasIncompleteDiagCode(diags []detector.Diagnostic, code string) bool {
+	for _, d := range diags {
+		if d.Code == code && strings.Contains(strings.ToLower(d.Message), "incomplete") {
+			return true
+		}
+	}
+	return false
 }
 
 func assertHasDiag(t *testing.T, diags []detector.Diagnostic, path, code string) {

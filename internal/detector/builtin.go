@@ -3,6 +3,8 @@ package detector
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"path"
 	"strings"
@@ -104,17 +106,49 @@ func (requirementsDetector) Detect(ctx context.Context, root fs.FS) ([]Finding, 
 	return out, diags
 }
 
+const (
+	terraformMaxEntries = 50_000
+	terraformMaxDepth   = 64
+)
+
+var errTerraformTraversalLimit = errors.New("Terraform traversal limit reached")
+
 type terraformDetector struct{}
 
 func (terraformDetector) Name() string { return "terraform" }
 func (terraformDetector) Detect(ctx context.Context, root fs.FS) ([]Finding, []Diagnostic) {
 	var out []Finding
-	_ = fs.WalkDir(root, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	var diags []Diagnostic
+	entries := 0
+	walkErr := fs.WalkDir(root, ".", func(p string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			diags = append(diags, Diagnostic{Path: p, Code: "cancelled", Message: "Terraform scan is incomplete: context canceled"})
+			return ctx.Err()
 		}
-		if err := ctx.Err(); err != nil {
-			return err
+		if entries >= terraformMaxEntries {
+			diags = append(diags, Diagnostic{
+				Path:    p,
+				Code:    "limit",
+				Message: fmt.Sprintf("Terraform scan is incomplete: entry limit of %d reached", terraformMaxEntries),
+			})
+			return errTerraformTraversalLimit
+		}
+		entries++
+		if err != nil {
+			diags = append(diags, Diagnostic{Path: p, Code: "walk", Message: fmt.Sprintf("Terraform scan is incomplete: %v", err)})
+			return nil
+		}
+		depth := 0
+		if p != "." {
+			depth = strings.Count(p, "/") + 1
+		}
+		if depth > terraformMaxDepth {
+			diags = append(diags, Diagnostic{
+				Path:    p,
+				Code:    "limit",
+				Message: fmt.Sprintf("Terraform scan is incomplete: path depth limit of %d reached", terraformMaxDepth),
+			})
+			return errTerraformTraversalLimit
 		}
 		if d.IsDir() {
 			switch path.Base(p) {
@@ -128,7 +162,10 @@ func (terraformDetector) Detect(ctx context.Context, root fs.FS) ([]Finding, []D
 		}
 		return nil
 	})
-	return out, nil
+	if walkErr != nil && !errors.Is(walkErr, errTerraformTraversalLimit) && !errors.Is(walkErr, ctx.Err()) {
+		diags = append(diags, Diagnostic{Path: ".", Code: "walk", Message: fmt.Sprintf("Terraform scan is incomplete: %v", walkErr)})
+	}
+	return out, diags
 }
 
 type githubActionsDetector struct{}
