@@ -38,4 +38,5 @@ The local repo has 14 tracked files, Go 1.22, a TUI entry point, detector tests,
 - Parent read back the README and workflow; content matches the local entrypoint and detector scope. The license section explicitly says no license was selected.
 - Offline `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./...` passed for all three packages; `git diff --check` passed. YAML parsed locally with `CPAN::Meta::YAML`; `actionlint` and PyYAML are unavailable and were not installed.
 - SP1/SP2 are complete. SP3 remains blocked until the owner selects license terms; do not infer MIT or copy Envy's license.
-- No remote branch, push, PR, or release was created. Next: commit the README/CI setup locally and hand back the license decision.
+- SP1/SP2 work-unit commit: `c00b94dc2c64931b53ac3ba0d9e96d057f2d3d01` (`docs: add Stackpeek README and Go CI`).
+- SP3 remains pending the owner's license choice; no push/PR/release was made.
