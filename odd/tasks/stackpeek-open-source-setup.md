@@ -39,4 +39,5 @@ The local repo has 14 tracked files, Go 1.22, a TUI entry point, detector tests,
 - Offline `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./...` passed for all three packages; `git diff --check` passed. Workflow YAML parsed locally with `CPAN::Meta::YAML`; `actionlint` and PyYAML were unavailable and not installed.
 - SP1/SP2 work-unit commit: `c00b94dc2c64931b53ac3ba0d9e96d057f2d3d01` (`docs: add Stackpeek README and Go CI`).
 - SP3 MIT LICENSE added with copyright `fxckcode` (2026), linked from README; its text matches the full standard MIT grant. `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./...`, local license comparison, and `git diff --check` passed.
-- Next: commit SP3 locally. No push/PR/release authorized.
+- SP3 work-unit commit: `e3273d10f8e0d2cb92e2ab495285d19b198db547` (`docs: add MIT license for Stackpeek`).
+- No push, PR, or release was made.
