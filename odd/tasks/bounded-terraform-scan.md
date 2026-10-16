@@ -35,4 +35,5 @@ The built-in registry describes filesystem reads as bounded, and `ReadFileBounde
 - Writer tests covered over-limit entry/depth paths, walk errors, and cancellation. The first independent verifier requested exact boundary and in-flight cancellation tests; the single correction added these.
 - Final independent verifier verdict: PASS. It confirmed below/at/over limits, in-flight cancellation, walk-error sibling retention, ignored-directory pruning, and incomplete diagnostics. Commands passed: `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./internal/detector`; `GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off go test ./...` (all three packages); `gofmt -d internal/detector/builtin.go internal/detector/builtin_test.go`; `git diff --check`. Parent also reran the full offline suite successfully.
 - Engram mirror pending because the memory store does not resolve this repository; do not guess a project key.
-- Next: create the local S1 work-unit commit. Do not push or open a PR without explicit authorization.
+- S1 work-unit commit: `a8fc26f5230b842da3e22f6a0db4994c47cc32e3` (`fix: bound Terraform scans and report incomplete results`).
+- No remote branch, push, or PR was created; explicit authorization is still required.
