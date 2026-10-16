@@ -54,4 +54,4 @@ go build ./...
 
 ## License
 
-No license has been selected. Do not assume permission to use, modify, or redistribute this project.
+Stackpeek is licensed under the [MIT License](LICENSE).
